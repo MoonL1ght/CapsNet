@@ -80,11 +80,36 @@ for r in range(ROUT_ITERS):
   u_produce_v = tf.reduce_sum(u_h * v_J_tiled, axis=3, keepdims=True)
   b_IJ += u_produce_v
 
-logit = tf.sqrt(tf.reduce_sum(tf.square(v_J), axis=-2)) # v l2 norm
+logit = tf.reshape(tf.sqrt(tf.reduce_sum(tf.square(v_J), axis=-2)), (-1, LABELS)) # v l2 norm
 prob = tf.nn.softmax(logit, axis=-2)
 pred_label = tf.argmax(prob, axis=-2)
 
 
+#caps_loss
+m_plus = 0.9
+m_minus = 0.1
+alpha = 0.5
+
+T_c = tf.one_hot(y, depth=LABELS)
+L_c = T_c*tf.maximum(0.0, m_plus-logit)**2 + alpha*(1-T_c)*tf.maximum(0.0, logit-m_minus)**2
+margin_loss = tf.reduce_mean(tf.reduce_mean(L_c, axis=1))
+
+#decoder
+oh = tf.reshape(T_c, (-1, LABELS))
+vv = tf.reshape(v_J, (-1, LABELS, VEC_LEN_J))
+inpt_1 = tf.reshape(T_c, (-1, LABELS,1))*vv
+inpt = tf.boolean_mask(vv, oh, axis=0)
+fc1 = tf.contrib.layers.fully_connected(inpt, num_outputs=512)
+fc2 = tf.contrib.layers.fully_connected(fc1, num_outputs=1024)
+decoded = tf.contrib.layers.fully_connected(fc2, num_outputs=28 * 28 * 1,
+  activation_fn=tf.sigmoid)
+
+#decoder_loss
+# decoded = tf.reshape(decoded, (-1, 28, 28, 1))
+orgin = tf.reshape(x, shape=(-1, 28*28*1))
+reconstruction_err = tf.reduce_mean(tf.square(decoded - orgin))
+
+loss = margin_loss + 0.0005 * reconstruction_err
 
 
 init = tf.global_variables_initializer()
@@ -92,6 +117,7 @@ sess = tf.Session()
 sess.run(init)
 
 x_batch = np.reshape(x_train[0:3], (3, 28, 28, 1))
+y_batch = y_train[0:3]
 print(x_batch.shape)
 
 conv1_res = sess.run(conv1, feed_dict={x: x_batch})
@@ -113,7 +139,19 @@ print(sess.run(tf.shape(v_J), feed_dict={x: x_batch}))
 
 print(sess.run(tf.shape(logit), feed_dict={x: x_batch}))
 print(sess.run(logit, feed_dict={x: x_batch}))
-print(sess.run(prob, feed_dict={x: x_batch}))
+# print(sess.run(prob, feed_dict={x: x_batch}))
 
-print(sess.run(pred_label, feed_dict={x: x_batch}))
+# print(sess.run(pred_label, feed_dict={x: x_batch}))
 
+print('-----')
+print(sess.run(L_c, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(margin_loss, feed_dict={x: x_batch, y: y_batch}))
+
+print('-=-=-=-=')
+print(sess.run(vv, feed_dict={x: x_batch}))
+print(sess.run(T_c, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(inpt, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(inpt_1, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(decoded, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(reconstruction_err, feed_dict={x: x_batch, y: y_batch}))
+print(sess.run(loss, feed_dict={x: x_batch, y: y_batch}))
