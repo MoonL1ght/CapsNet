@@ -25,7 +25,6 @@ class CapsNet(object):
                lambda_const=0.5,
                decoder_layers=(256, 512),
                decodel_loss_scale=0.0005):
-    ''
     '''
     Initializing CapsNet.
     Args:
