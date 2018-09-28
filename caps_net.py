@@ -13,7 +13,6 @@ class CapsNet(object):
   def __init__(self,
                input_dim,
                num_classes,
-               batch_size,
                routing_rounds=3,
                conv_layer=(3, 16, 1),
                conv_activaion=tf.nn.relu,
@@ -30,7 +29,6 @@ class CapsNet(object):
     Args:
       input_dim: size of input data, tuple.
       num_classes:
-      batch_size:
       routing_rounds:
       conv_layer:
       conv_activaion:
@@ -59,34 +57,36 @@ class CapsNet(object):
     pc_kernel_size = primary_caps[0]
     pc_input_layers = conv_f_maps
     pc_num_capsules = primary_caps[1] #Number of PrimaryCaps layer capsules.
-    self._pc_out_vec_len = primary_caps[2] #length of output vector from one primary capsule.
-    pc_f_maps = pc_num_capsules*self._pc_out_vec_len #Total number of future maps of PrimaryCaps layer.
+    pc_out_vec_len = primary_caps[2] #length of output vector from one primary capsule.
+    pc_f_maps = pc_num_capsules*pc_out_vec_len #Total number of future maps of PrimaryCaps layer.
     pc_stride = primary_caps[3]
     kernel = (pc_kernel_size, pc_kernel_size, pc_input_layers, pc_f_maps)
-    '''Shape of  primary_capsules: (batch_size, x_size, y_size, pc_num_capsules*self._pc_out_vec_len);
+    '''Shape of  primary_capsules: (batch_size, x_size, y_size, pc_num_capsules*pc_out_vec_len);
        x_size and y_size are like regular convolutional map sizes and depend from previous conv
        layer output size and PrimaryCaps layer stride.'''
     self.primary_capsules = create_conv(self.conv, kernel,
       stride=pc_stride, activation=primary_activation, name='primary_caps')
     '''Total number of regular capsules in PrimaryCaps layer:
        x_size*y_size*number_of_primary_capsules.'''
-    self._total_num_primary_capsules = self.primary_capsules.get_shape().as_list()[-2]*\
+    total_num_primary_capsules = self.primary_capsules.get_shape().as_list()[-2]*\
       self.primary_capsules.get_shape().as_list()[-3]*pc_num_capsules
-    '''capsules_out's shape: (batch_size, self._total_num_primary_capsules, self._pc_out_vec_len, 1).'''
+    '''capsules_out's shape: (batch_size, total_num_primary_capsules, pc_out_vec_len, 1).'''
     self.primary_capsules = tf.reshape(self.primary_capsules,
-      (-1, self._total_num_primary_capsules, self._pc_out_vec_len, 1))
+      (-1, total_num_primary_capsules, pc_out_vec_len, 1))
     self.primary_capsules = squash(self.primary_capsules)
 
     '''Creating DigitCaps layer.'''
     self.digit_layer = FCCapsLayer(num_classes, digit_caps_vector_len,
-      self._total_num_primary_capsules, self._pc_out_vec_len, routing_rounds=routing_rounds)
+      routing_rounds=routing_rounds)
     self.digit_layer_out = self.digit_layer(self.primary_capsules,
-      self._total_num_primary_capsules, self._pc_out_vec_len, batch_size)
+      total_num_primary_capsules, pc_out_vec_len)
 
     l2_norm_digit_caps_out = tf.sqrt(tf.reduce_sum(tf.square(self.digit_layer_out), axis=-2))
     self.logit = tf.reshape(l2_norm_digit_caps_out, (-1, num_classes))
     self.prob = tf.nn.softmax(self.logit, axis=-1)
     self.pred_label = tf.argmax(self.prob, axis=-1)
+    self.correct = tf.nn.in_top_k(self.prob, self.Y, 1)
+    self.accuracy = tf.reduce_mean(tf.cast(self.correct, tf.float32))
 
     T = tf.one_hot(self.Y, depth=num_classes)
     L = T*tf.square(tf.maximum(0.0, m_plus-self.logit)) +\
@@ -109,25 +109,6 @@ class CapsNet(object):
 
     '''Total loss.'''
     self.loss = self.margin_loss + decodel_loss_scale * self.decoder_loss
-
-  def define_out_and_loss(self, batch_size):
-    self.digit_layer_out = self.digit_layer(self.primary_capsules,
-      self._total_num_primary_capsules, self._pc_out_vec_len, batch_size)
-
-    l2_norm_digit_caps_out = tf.sqrt(tf.reduce_sum(tf.square(self.digit_layer_out), axis=-2))
-    self.logit = tf.reshape(l2_norm_digit_caps_out, (-1, num_classes))
-    self.prob = tf.nn.softmax(self.logit, axis=-1)
-    self.pred_label = tf.argmax(self.prob, axis=-1)
-
-    T = tf.one_hot(self.Y, depth=num_classes)
-    L = T*tf.square(tf.maximum(0.0, m_plus-self.logit)) +\
-      lambda_const*(1-T)*tf.square(tf.maximum(0.0, self.logit-m_minus))
-    self.margin_loss = tf.reduce_mean(tf.reduce_mean(L, axis=1))
-
-  def set_batch_size(self, batch_size):
-    # self.define_out_and_loss()
-    self.digit_layer_out = self.digit_layer(self.primary_capsules,
-      self._total_num_primary_capsules, self._pc_out_vec_len, batch_size)
  
   def explore_net(self, sess, X_batch, Y_batch):
     '''
@@ -154,8 +135,6 @@ class FCCapsLayer(object):
   def __init__(self,
                num_capsules,
                out_vec_len,
-               prev_layer_num_capsules,
-               pev_vec_len,
                routing_rounds=3):
     '''
     Initializing fully connected capsule layer.
@@ -172,12 +151,8 @@ class FCCapsLayer(object):
     self.routing_rounds=routing_rounds
     '''Weights matrix is used in matrix multiplication by output vectors from
        capsules for previous layer.'''
-    W_init = tf.truncated_normal((1, prev_layer_num_capsules, self.num_capsules,
-      pev_vec_len, self.out_vec_len),
-      dtype=DTYPE_F, stddev=STDDEV)
-    self.W = tf.Variable(W_init, name='digit_caps_weights')
 
-  def __call__(self, input, prev_layer_num_capsules, pev_vec_len, batch_size):
+  def __call__(self, input, prev_layer_num_capsules, pev_vec_len):
     '''
     Constructing capsule layer.
     Args:
@@ -187,15 +162,19 @@ class FCCapsLayer(object):
       batch_size: Batch size.
     '''
     '''U_hat computing.'''
+    W_init = tf.truncated_normal((1, prev_layer_num_capsules, self.num_capsules,
+      pev_vec_len, self.out_vec_len),
+      dtype=DTYPE_F, stddev=STDDEV)
+    W = tf.Variable(W_init, name='digit_caps_weights')
     input =  tf.reshape(input,
       shape=(-1, prev_layer_num_capsules, 1, pev_vec_len, 1))
     input = tf.tile(input, [1, 1, self.num_capsules, 1, 1])
-    W_tile = tf.tile(self.W, [batch_size, 1, 1, 1, 1])
+    W_tile = tf.tile(W, [tf.shape(input)[0], 1, 1, 1, 1])
     '''Matmul last two dimensions:
        dimensions: (..., pev_vec_len, self.out_vec_len).transpose * (..., pev_vec_len, 1),
        result dim: (batch_size, prev_layer_num_capsules, self.num_capsules, self.out_vec_len, 1)'''
     self.U_hat = tf.matmul(W_tile, input, transpose_a=True)
-    b = tf.zeros((batch_size, tf.shape(input)[1], self.num_capsules, 1, 1), DTYPE_F)
+    b = tf.zeros((tf.shape(input)[0], tf.shape(input)[1], self.num_capsules, 1, 1), DTYPE_F)
     return tf.squeeze(self.routing(self.U_hat, b), axis=1)
 
   def routing(self, input, b):
