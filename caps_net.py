@@ -28,11 +28,11 @@ class CapsNet(object):
     Initializing CapsNet.
     Args:
       input_dim: size of input data, tuple.
-      num_classes:
-      routing_rounds:
-      conv_layer:
-      conv_activaion:
-      primary_caps:
+      num_classes: total number of classes.
+      routing_rounds: number of rounds in routing alghoritm. 
+      conv_layer: size of convolutional layer (win_size, num_f_maps, input_maps).
+      conv_activaion: convoultional layer activation.
+      primary_caps: size of primary caps layer ().
       primary_activation:
       digit_caps_vector_len:
       m_plus:
