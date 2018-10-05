@@ -14,11 +14,11 @@ class CapsNet(object):
                input_dim,
                num_classes,
                routing_rounds=3,
-               conv_layer=(3, 16, 1),
+               conv_layer=(3, 64, 1),
                conv_activaion=tf.nn.relu,
-               primary_caps=(3, 16, 8, 2),
+               primary_caps=(3, 32, 8, 2),
                primary_activation=None,
-               digit_caps_vector_len=12,
+               digit_caps_vector_len=16,
                m_plus=0.9,
                m_minus=0.1,
                lambda_const=0.5,
@@ -31,10 +31,10 @@ class CapsNet(object):
       num_classes: total number of classes.
       routing_rounds: number of rounds in routing alghoritm. 
       conv_layer: size of convolutional layer (win_size, num_f_maps, input_maps).
-      conv_activaion: convoultional layer activation.
-      primary_caps: size of primary caps layer ().
-      primary_activation:
-      digit_caps_vector_len:
+      conv_activaion: convoultional layer activation function.
+      primary_caps: size of primary caps layer (win_size, num_f_maps, vec_len, stride).
+      primary_activation: primary caps layer activation function.
+      digit_caps_vector_len: 
       m_plus:
       m_minus:
       lambda_const:
@@ -91,14 +91,16 @@ class CapsNet(object):
     T = tf.one_hot(self.Y, depth=num_classes)
     L = T*tf.square(tf.maximum(0.0, m_plus-self.logit)) +\
       lambda_const*(1-T)*tf.square(tf.maximum(0.0, self.logit-m_minus))
-    self.margin_loss = tf.reduce_mean(tf.reduce_mean(L, axis=1))
+    self.margin_loss = tf.reduce_mean(tf.reduce_sum(L, axis=1))
 
     '''Decoder.'''
     mask = tf.reshape(T, (-1, num_classes))
     out = tf.squeeze(self.digit_layer_out, axis=-1)
     fc_input = tf.boolean_mask(out, mask, axis=0)
-    self.fc1 = tf.contrib.layers.fully_connected(fc_input, num_outputs=decoder_layers[0])
-    self.fc2 = tf.contrib.layers.fully_connected(self.fc1, num_outputs=decoder_layers[1])
+    self.fc1 = tf.contrib.layers.fully_connected(fc_input, num_outputs=decoder_layers[0],
+      activation_fn=tf.nn.relu)
+    self.fc2 = tf.contrib.layers.fully_connected(self.fc1, num_outputs=decoder_layers[1],
+      activation_fn=tf.nn.relu)
     num_outputs = input_dim[0]*input_dim[1]*input_dim[2]
     self.decoded = tf.contrib.layers.fully_connected(self.fc2, num_outputs=num_outputs,
       activation_fn=tf.nn.sigmoid)
@@ -108,6 +110,7 @@ class CapsNet(object):
     self.decoder_loss = tf.reduce_mean(tf.square(self.decoded - origin))
 
     '''Total loss.'''
+    decodel_loss_scale = decodel_loss_scale * input_dim[0] * input_dim[1]
     self.loss = self.margin_loss + decodel_loss_scale * self.decoder_loss
  
   def explore_net(self, sess, X_batch, Y_batch):
