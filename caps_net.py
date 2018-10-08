@@ -14,15 +14,15 @@ class CapsNet(object):
                input_dim,
                num_classes,
                routing_rounds=3,
-               conv_layer=(3, 64, 1),
+               conv_layer=(9, 256, 1),
                conv_activaion=tf.nn.relu,
-               primary_caps=(3, 32, 8, 2),
-               primary_activation=None,
+               primary_caps=(9, 32, 8, 2),
+               primary_activation=tf.nn.relu,
                digit_caps_vector_len=16,
                m_plus=0.9,
                m_minus=0.1,
                lambda_const=0.5,
-               decoder_layers=(256, 512),
+               decoder_layers=(512, 1024),
                decodel_loss_scale=0.0005):
     '''
     Initializing CapsNet.
@@ -110,7 +110,7 @@ class CapsNet(object):
     self.decoder_loss = tf.reduce_mean(tf.square(self.decoded - origin))
 
     '''Total loss.'''
-    decodel_loss_scale = decodel_loss_scale * input_dim[0] * input_dim[1]
+    # decodel_loss_scale = decodel_loss_scale * input_dim[0] * input_dim[1]
     self.loss = self.margin_loss + decodel_loss_scale * self.decoder_loss
  
   def explore_net(self, sess, X_batch, Y_batch):
@@ -205,7 +205,7 @@ class FCCapsLayer(object):
 
 
 def create_conv(input, kernel, stride=1, activation=tf.nn.relu,
-                padding='SAME', name='conv_layer'):
+                padding='VALID', name='conv_layer'):
   '''
     Create convolutional layer.
     Args:
