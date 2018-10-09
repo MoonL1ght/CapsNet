@@ -3,7 +3,7 @@ import tensorflow as tf
 
 
 '''Small constant used in squash function to avoid division by zero.'''
-SQAUSH_CONST = 1e-10
+SMALL_CONST = 1e-7
 STDDEV = 0.1
 DTYPE_F = tf.float32
 DTYPE_INT = tf.int32
@@ -13,11 +13,11 @@ class CapsNet(object):
   def __init__(self,
                input_dim,
                num_classes,
-               routing_rounds=3,
+               routing_rounds=2,
                conv_layer=(9, 256, 1),
                conv_activaion=tf.nn.relu,
                primary_caps=(9, 32, 8, 2),
-               primary_activation=tf.nn.relu,
+               primary_activation=None,
                digit_caps_vector_len=16,
                m_plus=0.9,
                m_minus=0.1,
@@ -42,15 +42,28 @@ class CapsNet(object):
       decodel_loss_scale:
     '''
     self.X = tf.placeholder(DTYPE_F, shape=(None,)+input_dim)
-    self.Y = tf.placeholder(DTYPE_INT, shape=(None))
+    # self.Y = tf.placeholder(DTYPE_INT, shape=(None))
 
     '''Creating convolutional layer.'''
     conv_kernel_size = conv_layer[0]
     conv_input_layers = input_dim[-1]
     conv_f_maps = conv_layer[1] #Number of convolutional future maps.
     conv_stride = conv_layer[2]
-    self.conv = create_conv(self.X, (conv_kernel_size, conv_kernel_size, conv_input_layers, conv_f_maps),
-      stride=conv_stride, activation=conv_activaion, name='conv')
+    # self.conv = create_conv(self.X, (conv_kernel_size, conv_kernel_size, conv_input_layers, conv_f_maps),
+    #   stride=conv_stride, activation=conv_activaion, name='conv')
+    # conv1_params = {
+    #   "filters": 256,
+    #   "kernel_size": 9,
+    #   "strides": 1,
+    #   "padding": "valid",
+    #   "activation": tf.nn.relu,
+    # }
+    # self.conv1 = tf.layers.conv2d(self.X, name="conv1_", **conv1_params)
+    # self.conv2 = tf.layers.conv2d(self.X, name="conv2_", **conv1_params)
+    self.conv = tf.layers.conv2d(self.X, 
+      filters=256, kernel_size=9, strides=1,
+      padding='valid', activation=tf.nn.relu, name="conv1")
+    
 
     '''Creating PrimaryCaps (PC) layer.
        PrimaryCaps layer is similar to convolutional layer.'''
@@ -64,40 +77,62 @@ class CapsNet(object):
     '''Shape of  primary_capsules: (batch_size, x_size, y_size, pc_num_capsules*pc_out_vec_len);
        x_size and y_size are like regular convolutional map sizes and depend from previous conv
        layer output size and PrimaryCaps layer stride.'''
-    self.primary_capsules = create_conv(self.conv, kernel,
-      stride=pc_stride, activation=primary_activation, name='primary_caps')
+    # self.primary_capsules = create_conv(self.conv, kernel,
+    #   stride=pc_stride, activation=primary_activation, name='primary_caps')
+    self.primary_capsules = tf.layers.conv2d(self.conv, 
+      filters=pc_f_maps, kernel_size=9, strides=2,
+      padding='valid', activation=tf.nn.relu, name="conv2")
+
+
+    # self.primary_capsules_1 = self.primary_capsules
     '''Total number of regular capsules in PrimaryCaps layer:
        x_size*y_size*number_of_primary_capsules.'''
     total_num_primary_capsules = self.primary_capsules.get_shape().as_list()[-2]*\
       self.primary_capsules.get_shape().as_list()[-3]*pc_num_capsules
     '''capsules_out's shape: (batch_size, total_num_primary_capsules, pc_out_vec_len, 1).'''
-    self.primary_capsules = tf.reshape(self.primary_capsules,
-      (-1, total_num_primary_capsules, pc_out_vec_len, 1))
-    self.primary_capsules = squash(self.primary_capsules)
+    # self.primary_capsules = tf.reshape(self.primary_capsules,
+    #   (-1, total_num_primary_capsules, pc_out_vec_len, 1))
+    self.primary_capsules_ = tf.reshape(self.primary_capsules,
+      (-1, total_num_primary_capsules, pc_out_vec_len))
+    self.primary_capsules_s = squash(self.primary_capsules_)
 
     '''Creating DigitCaps layer.'''
     self.digit_layer = FCCapsLayer(num_classes, digit_caps_vector_len,
       routing_rounds=routing_rounds)
-    self.digit_layer_out = self.digit_layer(self.primary_capsules,
+    self.digit_layer_out = self.digit_layer(self.primary_capsules_s,
       total_num_primary_capsules, pc_out_vec_len)
 
-    l2_norm_digit_caps_out = tf.sqrt(tf.reduce_sum(tf.square(self.digit_layer_out), axis=-2))
-    self.logit = tf.reshape(l2_norm_digit_caps_out, (-1, num_classes))
-    self.prob = tf.nn.softmax(self.logit, axis=-1)
+    self.Y = tf.placeholder(DTYPE_INT, shape=(None))
+    self.l2_norm_digit_caps_out = tf.sqrt(tf.reduce_sum(tf.square(self.digit_layer_out),
+      axis=-2) + SMALL_CONST)
+    self.logit = tf.reshape(self.l2_norm_digit_caps_out, (-1, num_classes))
+    self.prob = self.logit#tf.nn.softmax(self.logit, axis=-1)
     self.pred_label = tf.argmax(self.prob, axis=-1)
     self.correct = tf.nn.in_top_k(self.prob, self.Y, 1)
     self.accuracy = tf.reduce_mean(tf.cast(self.correct, tf.float32))
 
-    T = tf.one_hot(self.Y, depth=num_classes)
-    L = T*tf.square(tf.maximum(0.0, m_plus-self.logit)) +\
-      lambda_const*(1-T)*tf.square(tf.maximum(0.0, self.logit-m_minus))
-    self.margin_loss = tf.reduce_mean(tf.reduce_sum(L, axis=1))
+    self.T = tf.one_hot(self.Y, depth=num_classes)
+    self.max_l = tf.maximum(0.0, m_plus-self.logit)
+    self.max_r = tf.maximum(0.0, self.logit-m_minus)
+    self.L = self.T*tf.square(tf.maximum(0.0, m_plus-self.logit)) +\
+      lambda_const*(1-self.T)*tf.square(tf.maximum(0.0, self.logit-m_minus))
+    self.ML = tf.reduce_sum(self.L, axis=1)
+    self.margin_loss = tf.reduce_mean(self.ML)
 
     '''Decoder.'''
-    mask = tf.reshape(T, (-1, num_classes))
-    out = tf.squeeze(self.digit_layer_out, axis=-1)
-    fc_input = tf.boolean_mask(out, mask, axis=0)
-    self.fc1 = tf.contrib.layers.fully_connected(fc_input, num_outputs=decoder_layers[0],
+    self.mask = tf.reshape(self.T, (-1, num_classes))
+    reconstruction_mask_reshaped = tf.reshape(
+      self.mask, [-1, 1, num_classes, 1, 1],
+      name="reconstruction_mask_reshaped")
+    self.fc_input = tf.multiply(
+      self.digit_layer_out, reconstruction_mask_reshaped,
+      name="caps2_output_masked")
+    self.decoder_input = tf.reshape(self.fc_input,
+      [-1, num_classes * digit_caps_vector_len],
+      name="decoder_input")
+    # self.out = tf.squeeze(self.digit_layer_out, axis=-1)
+    # self.fc_input = tf.boolean_mask(self.out, self.mask, axis=0)
+    self.fc1 = tf.contrib.layers.fully_connected(self.decoder_input, num_outputs=decoder_layers[0],
       activation_fn=tf.nn.relu)
     self.fc2 = tf.contrib.layers.fully_connected(self.fc1, num_outputs=decoder_layers[1],
       activation_fn=tf.nn.relu)
@@ -165,20 +200,20 @@ class FCCapsLayer(object):
       batch_size: Batch size.
     '''
     '''U_hat computing.'''
-    W_init = tf.truncated_normal((1, prev_layer_num_capsules, self.num_capsules,
-      pev_vec_len, self.out_vec_len),
+    W_init = tf.random_normal((1, prev_layer_num_capsules, self.num_capsules,
+      self.out_vec_len, pev_vec_len),
       dtype=DTYPE_F, stddev=STDDEV)
-    W = tf.Variable(W_init, name='digit_caps_weights')
-    input =  tf.reshape(input,
+    self.W = tf.Variable(W_init, name='digit_caps_weights')
+    self.input =  tf.reshape(input,
       shape=(-1, prev_layer_num_capsules, 1, pev_vec_len, 1))
-    input = tf.tile(input, [1, 1, self.num_capsules, 1, 1])
-    W_tile = tf.tile(W, [tf.shape(input)[0], 1, 1, 1, 1])
+    self.input = tf.tile(self.input, [1, 1, self.num_capsules, 1, 1])
+    self.W_tile = tf.tile(self.W, [tf.shape(self.input)[0], 1, 1, 1, 1])
     '''Matmul last two dimensions:
        dimensions: (..., pev_vec_len, self.out_vec_len).transpose * (..., pev_vec_len, 1),
        result dim: (batch_size, prev_layer_num_capsules, self.num_capsules, self.out_vec_len, 1)'''
-    self.U_hat = tf.matmul(W_tile, input, transpose_a=True)
-    b = tf.zeros((tf.shape(input)[0], tf.shape(input)[1], self.num_capsules, 1, 1), DTYPE_F)
-    return tf.squeeze(self.routing(self.U_hat, b), axis=1)
+    self.U_hat = tf.matmul(self.W_tile, self.input)
+    self.b = tf.zeros((tf.shape(self.input)[0], tf.shape(self.input)[1], self.num_capsules, 1, 1), DTYPE_F)
+    return self.routing(self.U_hat, self.b)
 
   def routing(self, input, b):
     '''
@@ -189,16 +224,16 @@ class FCCapsLayer(object):
     '''
     input_stopped = tf.stop_gradient(input, name='stop_gradient')
     for i in range(self.routing_rounds):
-      c = tf.nn.softmax(b, axis=2)
+      self.c = tf.nn.softmax(b, axis=2)
       if i == self.routing_rounds-1:
-        s = tf.multiply(c, input)
-        s = tf.reduce_sum(s, axis=1, keepdims=True)
-        v = squash(s)
-        return v
+        self.s = tf.multiply(self.c, input)
+        self.s = tf.reduce_sum(self.s, axis=1, keepdims=True)
+        self.v = squash(self.s, axis=-2)
+        return self.v
       elif i < self.routing_rounds-1:
-        s = tf.multiply(c, input_stopped)
+        s = tf.multiply(self.c, input_stopped)
         s = tf.reduce_sum(s, axis=1, keepdims=True)
-        v = squash(s)
+        v = squash(s, axis=-2)
         v_tiled = tf.tile(v, [1, tf.shape(input_stopped)[1], 1, 1, 1])
         input_produce_v = tf.reduce_sum(input_stopped * v_tiled, axis=3, keepdims=True)
         b += input_produce_v
@@ -226,7 +261,7 @@ def create_conv(input, kernel, stride=1, activation=tf.nn.relu,
     else:
       return activation(tf.nn.bias_add(conv, conv_bias))
 
-def squash(vector):
+def squash(vector, axis=-1):
   '''
     Squash function.
     Args:
@@ -235,8 +270,8 @@ def squash(vector):
     Returns:
       A squashed vector with the same shape as input vector.
   '''
-  squared_vector_norm = tf.reduce_sum(tf.square(vector), -2, keepdims=True)
-  vector_norm = tf.sqrt(squared_vector_norm + SQAUSH_CONST)
-  scaling_factor = squared_vector_norm / (1 + squared_vector_norm)
-  vector_squashed = scaling_factor * vector / (vector_norm)
+  squared_vector_norm = tf.reduce_sum(tf.square(vector), axis, keepdims=True)
+  vector_norm = tf.sqrt(squared_vector_norm + SMALL_CONST)
+  scaling_factor = squared_vector_norm / (1.0 + squared_vector_norm)
+  vector_squashed = scaling_factor * vector / vector_norm
   return vector_squashed
